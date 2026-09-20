@@ -1,0 +1,19 @@
+# Python & Environment (CRITICAL)
+venv/
+__pycache__/
+.DS_Store
+
+# Security & Environment Variables
+.env
+.env.local
+
+# VS Code Settings
+.vscode/
+
+# Downloaded Machine Learning Assets
+hand_landmarker.task
+
+# React Native / Node (For Phase 4)
+node_modules/
+npm-debug.log
+yarn-error.log
