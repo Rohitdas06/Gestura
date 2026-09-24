@@ -1,9 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, Button, TouchableOpacity } from 'react-native';
+import { bundleResourceIO } from '@tensorflow/tfjs-react-native';
+// Import your custom model assets
+const customModelJson = require('../../assets/model/model.json'); // Adjust path based on where index.tsx is
+const customModelWeights = require('../../assets/model/group1-shard1of1.bin');
+const customModelLabels = require('../../assets/model/labels.json');
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as tf from '@tensorflow/tfjs';
 import { decodeJpeg } from '@tensorflow/tfjs-react-native';
 import * as handpose from '@tensorflow-models/handpose';
+// 1. Import the new Image Manipulator
+import * as ImageManipulator from 'expo-image-manipulator';
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -11,7 +18,6 @@ export default function App() {
   const [handModel, setHandModel] = useState<handpose.HandPose | null>(null);
   const [translation, setTranslation] = useState("Press Start to begin...");
   
-  // States and refs to safely control the loop
   const [isTranslating, setIsTranslating] = useState(false);
   const isTranslatingRef = useRef(false); 
   
@@ -48,51 +54,58 @@ export default function App() {
   };
 
   const scanFrame = async () => {
-    // 1. Break out of the loop if paused
     if (!cameraRef.current || !handModel || !isTranslatingRef.current) return;
 
     try {
       console.log("1. Snapping photo...");
+      // Ask for a standard photo FIRST, without locking the thread with Base64
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.1,
-        base64: true,
         skipProcessing: true,
       });
 
-      // CRITICAL FIX: Pause for 50ms to unfreeze the UI so the Stop button works
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      if (photo && photo.base64 && isTranslatingRef.current) {
-        console.log("2. Converting image text to AI Tensor...");
+      if (photo && photo.uri && isTranslatingRef.current) {
+        console.log("2. Shrinking image size...");
         
-        const uint8Array = tf.util.encodeString(photo.base64, 'base64');
-        const imageTensor = decodeJpeg(uint8Array);
+        // 2. Drastically shrink the image to a 300px width and extract the much smaller Base64
+        const resizedPhoto = await ImageManipulator.manipulateAsync(
+          photo.uri,
+          [{ resize: { width: 300 } }], 
+          { compress: 0.1, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+        );
 
-        // Yield the thread again before the heavy AI math
         await new Promise(resolve => setTimeout(resolve, 50));
 
-        if (isTranslatingRef.current) {
-          console.log("3. Scanning for hands...");
-          const predictions = await handModel.estimateHands(imageTensor);
-          console.log("4. Hands found: ", predictions.length);
+        if (resizedPhoto.base64 && isTranslatingRef.current) {
+          console.log("3. Converting tiny image to AI Tensor...");
+          const uint8Array = tf.util.encodeString(resizedPhoto.base64, 'base64');
+          const imageTensor = decodeJpeg(uint8Array);
 
-          if (predictions && predictions.length > 0) {
-            setTranslation("Hand Detected! 🖐");
-          } else {
-            setTranslation("Waiting for hand...");
+          await new Promise(resolve => setTimeout(resolve, 50));
+
+          if (isTranslatingRef.current) {
+            console.log("4. Scanning for hands...");
+            const predictions = await handModel.estimateHands(imageTensor);
+            console.log("5. Hands found: ", predictions.length);
+
+            if (predictions && predictions.length > 0) {
+              setTranslation("Hand Detected! 🖐");
+            } else {
+              setTranslation("Waiting for hand...");
+            }
           }
-        }
 
-        // Memory cleanup
-        tf.dispose([imageTensor]);
+          tf.dispose([imageTensor]);
+        }
       }
     } catch (error) {
       console.log("SCANNING ERROR: ", error);
     }
 
-    // Schedule the next frame only if still translating
     if (isTranslatingRef.current) {
-      setTimeout(scanFrame, 500); 
+      setTimeout(scanFrame, 300); // slightly faster loop now that the math is lighter
     }
   };
 
