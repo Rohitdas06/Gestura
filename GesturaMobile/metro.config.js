@@ -3,7 +3,7 @@ const { getDefaultConfig } = require('expo/metro-config');
 
 const config = getDefaultConfig(__dirname);
 
-// Add the extensions needed for TensorFlow.js models
-config.resolver.assetExts.push('bin', 'txt', 'jpg', 'png', 'json');
+// Weight shards are binary assets; keep model.json as a JS module via require()
+config.resolver.assetExts.push('bin');
 
 module.exports = config;
