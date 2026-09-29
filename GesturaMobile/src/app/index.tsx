@@ -50,7 +50,6 @@ export default function App() {
   };
 
   const startScanning = async () => {
-    // FORCE YIELD: Give the UI thread a full 1-second breather to register clicks
     await new Promise(resolve => setTimeout(resolve, 1000));
 
     if (!cameraRef.current || !trackerModel || !signModel || !isTranslatingRef.current) return;
@@ -58,14 +57,14 @@ export default function App() {
 
     isProcessingFrame.current = true;
     
-    // Declare tensors out here so they can ALWAYS be cleaned up, even on failure
+    // Declare all tensors here so they can ALWAYS be cleaned up
     let imageTensor: tf.Tensor3D | null = null;
+    let resizedTensor: tf.Tensor3D | null = null;
     let inputTensor: tf.Tensor2D | null = null;
     let predictionTensor: tf.Tensor | null = null;
 
     try {
       console.log("📸 Snapping photo...");
-      // Removed skipProcessing to prevent Android hardware crashes
       const photo = await cameraRef.current.takePictureAsync({ 
         base64: true, 
         quality: 0.1, 
@@ -79,7 +78,11 @@ export default function App() {
       const raw = new Uint8Array(imgBuffer);
       imageTensor = decodeJpeg(raw);
 
-      const predictions = await trackerModel.estimateHands(imageTensor);
+      // FIX: Shrink the giant camera image down to 320x240 so the AI can see it
+      resizedTensor = tf.image.resizeBilinear(imageTensor, [320, 240]).toInt();
+
+      // Pass the resized image and set flipHorizontal to true for the front camera
+      const predictions = await trackerModel.estimateHands(resizedTensor, true);
       
       if (predictions.length > 0) {
         const landmarks = predictions[0].landmarks;
@@ -103,8 +106,9 @@ export default function App() {
     } finally {
       isProcessingFrame.current = false;
       
-      // GUARANTEED MEMORY CLEANUP: Prevents the app from freezing
+      // GUARANTEED MEMORY CLEANUP
       if (imageTensor) imageTensor.dispose();
+      if (resizedTensor) resizedTensor.dispose();
       if (inputTensor) inputTensor.dispose();
       if (predictionTensor) predictionTensor.dispose();
 
