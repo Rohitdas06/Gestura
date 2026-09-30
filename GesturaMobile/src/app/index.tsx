@@ -5,7 +5,6 @@ import * as tf from '@tensorflow/tfjs';
 import * as handpose from '@tensorflow-models/handpose';
 import { bundleResourceIO, decodeJpeg } from '@tensorflow/tfjs-react-native';
 
-// Import your custom model assets
 const customModelJson = require('../../assets/model/model.json'); 
 const customModelWeights = require('../../assets/model/group1-shard1of1.bin');
 const customModelLabels = require('../../assets/model/labels.json');
@@ -13,9 +12,11 @@ const customModelLabels = require('../../assets/model/labels.json');
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [isTranslating, setIsTranslating] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [trackerModel, setTrackerModel] = useState<handpose.HandPose | null>(null);
   const [signModel, setSignModel] = useState<tf.LayersModel | null>(null);
   const [translation, setTranslation] = useState("Waiting for sign...");
+  const [statusInfo, setStatusInfo] = useState("Ready to start"); 
   
   const cameraRef = useRef<any>(null);
   const isTranslatingRef = useRef(isTranslating); 
@@ -33,38 +34,38 @@ export default function App() {
     try {
       await tf.ready();
       console.log("TensorFlow ready!");
-
       const tracker = await handpose.load();
       setTrackerModel(tracker);
       console.log("Hand Tracker Loaded!");
-
       const loadedSignModel = await tf.loadLayersModel(
         bundleResourceIO(customModelJson, customModelWeights)
       );
       setSignModel(loadedSignModel);
       console.log("Sign Language Model Loaded!");
-
     } catch (error) {
       console.error("Error waking up brains:", error);
     }
   };
 
   const startScanning = async () => {
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
     if (!cameraRef.current || !trackerModel || !signModel || !isTranslatingRef.current) return;
     if (isProcessingFrame.current) return; 
 
     isProcessingFrame.current = true;
     
-    // Declare all tensors here so they can ALWAYS be cleaned up
     let imageTensor: tf.Tensor3D | null = null;
     let resizedTensor: tf.Tensor3D | null = null;
     let inputTensor: tf.Tensor2D | null = null;
     let predictionTensor: tf.Tensor | null = null;
 
     try {
-      console.log("📸 Snapping photo...");
+      // Changed to a 2-second countdown for faster testing
+      setStatusInfo("📸 POSE NOW!");
+      console.log("📸 POSE NOW! (Waiting 2 seconds for you to lift your hand...)");
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      if (!isTranslatingRef.current) return;
+      
       const photo = await cameraRef.current.takePictureAsync({ 
         base64: true, 
         quality: 0.1, 
@@ -73,15 +74,20 @@ export default function App() {
       
       if (!isTranslatingRef.current) return;
 
-      console.log("🧠 Processing AI...");
+      setStatusInfo("🧠 ANALYZING... (Rest your hand)");
+      console.log("🧠 ANALYZING AI...");
+      
+      await new Promise(resolve => setTimeout(resolve, 150)); 
+
       const imgBuffer = tf.util.encodeString(photo.base64, 'base64').buffer;
       const raw = new Uint8Array(imgBuffer);
+      
       imageTensor = decodeJpeg(raw);
-
-      // FIX: Shrink the giant camera image down to 320x240 so the AI can see it
       resizedTensor = tf.image.resizeBilinear(imageTensor, [320, 240]).toInt();
 
-      // Pass the resized image and set flipHorizontal to true for the front camera
+      await new Promise(resolve => setTimeout(resolve, 150)); 
+      if (!isTranslatingRef.current) return;
+
       const predictions = await trackerModel.estimateHands(resizedTensor, true);
       
       if (predictions.length > 0) {
@@ -96,36 +102,51 @@ export default function App() {
         const predictedWord = customModelLabels[maxProbabilityIndex];
         
         setTranslation(predictedWord);
+        setStatusInfo("✅ Success!");
         console.log("✅ Sign detected:", predictedWord);
       } else {
-        console.log("❌ No hands detected in this frame.");
+        setStatusInfo("❌ No hand found.");
+        console.log("❌ No hands detected in this frame. (Tip: Show your wrist and hold still!)");
       }
 
     } catch (error) {
       console.error("Scanning Error:", error);
+      setStatusInfo("⚠️ Error processing");
     } finally {
       isProcessingFrame.current = false;
       
-      // GUARANTEED MEMORY CLEANUP
       if (imageTensor) imageTensor.dispose();
       if (resizedTensor) resizedTensor.dispose();
       if (inputTensor) inputTensor.dispose();
       if (predictionTensor) predictionTensor.dispose();
 
-      if (isTranslatingRef.current) {
-        startScanning(); 
+      if (!isTranslatingRef.current) {
+        setTimeout(() => {
+          setIsStopping(false);
+          setStatusInfo("Paused");
+        }, 500);
+        console.log("🛑 Translation Paused.");
+        return;
       }
+
+      setTimeout(() => {
+        if (isTranslatingRef.current) startScanning();
+      }, 1500);
     }
   };
 
   const toggleTranslation = () => {
     if (isTranslating) {
       setIsTranslating(false);
-      setTranslation("Paused");
+      setIsStopping(true);
+      setStatusInfo("Finishing current thought...");
+      console.log("⚠️ Stop button clicked, waiting for AI to finish...");
     } else {
       setIsTranslating(true);
+      setIsStopping(false);
       setTranslation("Waiting for sign...");
-      startScanning();
+      console.log("▶️ Starting translation loop...");
+      setTimeout(startScanning, 100);
     }
   };
 
@@ -151,20 +172,29 @@ export default function App() {
 
       <View style={styles.translationContainer}>
         <Text style={styles.translationText}>{translation}</Text>
+        <Text style={styles.statusText}>{statusInfo}</Text>
       </View>
 
       <View style={styles.controlsContainer}>
         <TouchableOpacity 
-          style={[styles.button, isTranslating ? styles.buttonStop : styles.buttonStart]} 
+          style={[
+            styles.button, 
+            !trackerModel ? styles.buttonLoading : 
+            isStopping ? styles.buttonStopping :
+            isTranslating ? styles.buttonStop : 
+            styles.buttonStart
+          ]} 
           onPress={toggleTranslation}
-          disabled={!trackerModel || !signModel}
+          disabled={!trackerModel || !signModel || isStopping}
         >
           <Text style={styles.buttonText}>
             {!trackerModel || !signModel 
               ? "Loading Brains..." 
-              : isTranslating 
-                ? "Stop Translating" 
-                : "Start Translating"}
+              : isStopping
+                ? "Stopping..."
+                : isTranslating 
+                  ? "Stop Translating" 
+                  : "Start Translating"}
           </Text>
         </TouchableOpacity>
       </View>
@@ -198,6 +228,12 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     textTransform: 'uppercase',
   },
+  statusText: {
+    color: '#FFA500', 
+    fontSize: 16,
+    fontWeight: '600',
+    marginTop: 10,
+  },
   controlsContainer: {
     position: 'absolute',
     bottom: 100, 
@@ -216,10 +252,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   buttonStart: {
-    backgroundColor: '#4CAF50',
+    backgroundColor: '#4CAF50', // Green
   },
   buttonStop: {
-    backgroundColor: '#F44336',
+    backgroundColor: '#F44336', // Red
+  },
+  buttonStopping: {
+    backgroundColor: '#888888', // Grey
+  },
+  buttonLoading: {
+    backgroundColor: '#333333', // Dark Grey
   },
   buttonText: {
     color: 'white',
