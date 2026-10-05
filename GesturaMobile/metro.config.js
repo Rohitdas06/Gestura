@@ -3,7 +3,7 @@ const { getDefaultConfig } = require('expo/metro-config');
 
 const config = getDefaultConfig(__dirname);
 
-// Weight shards are binary assets; keep model.json as a JS module via require()
-config.resolver.assetExts.push('bin');
+// Add custom asset extensions for AI models
+config.resolver.assetExts.push('tflite');
 
 module.exports = config;
