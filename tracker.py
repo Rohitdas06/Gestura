@@ -9,7 +9,7 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # --- CONFIGURATION ---
-SIGN_LABEL = "hello"  # Change label name when recording different signs
+SIGN_LABEL = "welcome"  # Change label name when recording different signs
 CSV_FILENAME = "sign_language_dataset.csv"
 CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), CSV_FILENAME)
 
