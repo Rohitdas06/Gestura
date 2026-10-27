@@ -6,5 +6,3 @@
  * guideline: "Keep non-route code (components, hooks, utils) outside src/app/."
  */
 export { default } from '@/screens/LiveTranslationScreen';
-
-
