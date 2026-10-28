@@ -40,11 +40,10 @@
           "imageWidth": 76
         }
       ],
-      "react-native-fast-tflite"
     ],
     "experiments": {
       "typedRoutes": true,
-      "reactCompiler": true
+      "reactCompiler": false
     }
   }
 }

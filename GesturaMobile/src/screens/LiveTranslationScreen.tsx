@@ -3,9 +3,17 @@
  *
  * Real-time sign-language gesture recognition screen for Gestura.
  *
- * Pipeline (runs at ~3 FPS via snapshot timer):
+ * Architecture (to prevent JNI global reference leaks):
+ *   The screen is split into two components:
+ *   - CameraShell: Holds VisionCamera's `usePhotoOutput` and the Camera
+ *     view. Gesture state lives in GestureProcessor so HUD updates do
+ *     not recreate camera outputs.
+ *   - GestureProcessor: Holds gesture recognition state (gesture,
+ *     confidence). Its re-renders are isolated from camera hooks.
+ *
+ * Pipeline (runs at ~2 FPS via snapshot timer):
  *   1. A timer captures a photo via VisionCamera v5's `usePhotoOutput`
- *      + `capturePhotoToFile()` every ~350ms.
+ *      + `capturePhotoToFile()` every ~500ms.
  *   2. The file path is passed to the Expo Module `expo-mediapipe-hands`
  *      which decodes the image and runs MediaPipe HandLandmarker to
  *      extract 21 normalised 3-D landmarks (63 floats).
@@ -15,7 +23,7 @@
  *      displayed in the UI overlay.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
@@ -24,11 +32,8 @@ import {
 } from 'react-native';
 import {
   Camera,
-  type CameraRef,
-  useCameraDevice,
   useCameraPermission,
   usePhotoOutput,
-  type CameraPhotoOutput,
 } from 'react-native-vision-camera';
 import { useTensorflowModel } from 'react-native-fast-tflite';
 
@@ -40,9 +45,10 @@ import ExpoMediapipeHands from 'expo-mediapipe-hands';
 // ---------------------------------------------------------------------------
 
 const LABELS: string[] = ['hello', 'thank_you', 'welcome'];
-const MODEL_ASSET = require('@/assets/model/sign_language_model.tflite');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const MODEL_ASSET: number = require('@/assets/model/sign_language_model.tflite');
 const CONFIDENCE_THRESHOLD = 0.60;
-const SNAPSHOT_INTERVAL_MS = 350;
+const SNAPSHOT_INTERVAL_MS = 500;
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -61,7 +67,7 @@ function argmax(arr: ArrayLike<number>): { index: number; value: number } {
 }
 
 // ---------------------------------------------------------------------------
-// HUD Overlay — separated to prevent Camera re-renders from state changes
+// HUD Overlay
 // ---------------------------------------------------------------------------
 
 interface HUDProps {
@@ -113,81 +119,36 @@ const HUDOverlay = React.memo(function HUDOverlay({
 });
 
 // ---------------------------------------------------------------------------
-// Camera View — stable component that doesn't re-render with gesture state
+// GestureProcessor — holds all mutable gesture state.
+// Re-renders from state changes are isolated here, away from camera hooks.
+// Receives photoOutput.capturePhotoToFile as a stable ref callback.
 // ---------------------------------------------------------------------------
 
-interface CameraLayerProps {
-  cameraRef: React.RefObject<CameraRef | null>;
-  outputs: CameraPhotoOutput[];
+interface GestureProcessorProps {
+  capturePhotoRef: React.RefObject<(() => Promise<{ filePath: string }>) | null>;
 }
 
-const CameraLayer = React.memo(function CameraLayer({
-  cameraRef,
-  outputs,
-}: CameraLayerProps) {
-  const device = useCameraDevice('front');
-
-  if (device == null) {
-    return (
-      <View style={styles.center}>
-        <Text style={styles.statusText}>No front camera found</Text>
-      </View>
-    );
-  }
-
-  return (
-    <Camera
-      ref={cameraRef}
-      style={StyleSheet.absoluteFill}
-      device={device}
-      isActive={true}
-      outputs={outputs}
-    />
-  );
-});
-
-// ---------------------------------------------------------------------------
-// Main Component
-// ---------------------------------------------------------------------------
-
-export default function LiveTranslationScreen() {
-  // ---- Camera Permission --------------------------------------------------
-  const { hasPermission, requestPermission } = useCameraPermission();
-
-  useEffect(() => {
-    if (!hasPermission) requestPermission();
-  }, [hasPermission, requestPermission]);
-
-  // ---- Camera Ref ---------------------------------------------------------
-  const cameraRef = useRef<CameraRef>(null);
-
-  // ---- Photo Output (VisionCamera v5) -------------------------------------
-  const photoOutput = usePhotoOutput({
-    quality: 0.5,
-    qualityPrioritization: 'speed',
-  });
-  const outputs = useMemo(() => [photoOutput], [photoOutput]);
-
-  // ---- TFLite Gesture Classifier ------------------------------------------
+function GestureProcessor({ capturePhotoRef }: GestureProcessorProps) {
   const tfModel = useTensorflowModel(MODEL_ASSET, []);
 
-  // ---- Recognised Gesture State -------------------------------------------
   const [gesture, setGesture] = useState<string | null>(null);
   const [confidence, setConfidence] = useState<number>(0);
 
-  // ---- Refs for the processing loop (avoid re-renders) --------------------
   const busyRef = useRef(false);
   const activeRef = useRef(true);
-  const tfModelRef = useRef(tfModel);
-  tfModelRef.current = tfModel;
 
-  // ---- Snapshot → MediaPipe → TFLite pipeline -----------------------------
   const processSnapshot = useCallback(async () => {
     if (busyRef.current) return;
 
-    const model = tfModelRef.current;
+    const model = tfModel;
     if (model.state !== 'loaded') {
       console.log('[Gestura] Model not loaded yet, state:', model.state);
+      return;
+    }
+
+    const capturePhoto = capturePhotoRef.current;
+    if (!capturePhoto) {
+      console.log('[Gestura] capturePhoto not ready yet');
       return;
     }
 
@@ -195,10 +156,7 @@ export default function LiveTranslationScreen() {
 
     try {
       console.log('[Gestura] Capturing photo...');
-      const photoFile = await photoOutput.capturePhotoToFile(
-        { flashMode: 'off', enableShutterSound: false },
-        {},
-      );
+      const photoFile = await capturePhoto();
       console.log('[Gestura] Photo captured:', photoFile.filePath);
 
       const landmarks: number[] =
@@ -231,9 +189,9 @@ export default function LiveTranslationScreen() {
     } finally {
       busyRef.current = false;
     }
-  }, [photoOutput]);
+  }, [tfModel, capturePhotoRef]);
 
-  // ---- Snapshot loop ------------------------------------------------------
+  // Snapshot loop
   useEffect(() => {
     activeRef.current = true;
     let timeoutId: ReturnType<typeof setTimeout>;
@@ -247,14 +205,108 @@ export default function LiveTranslationScreen() {
       });
     };
 
-    timeoutId = setTimeout(loop, 2000);
+    // Give the camera 3s to initialize before starting the loop.
+    timeoutId = setTimeout(loop, 3000);
     return () => {
       activeRef.current = false;
       clearTimeout(timeoutId);
     };
   }, [processSnapshot]);
 
-  // ---- Render Guards ------------------------------------------------------
+  return (
+    <HUDOverlay
+      gesture={gesture}
+      confidence={confidence}
+      modelState={tfModel.state}
+      modelError={tfModel.state === 'error' ? tfModel.error?.message : undefined}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CameraShell — holds camera hooks, NEVER re-renders from gesture state.
+// This prevents the JNI global reference leak in useCameraDevice().
+// ---------------------------------------------------------------------------
+
+function CameraShell() {
+  const [cameraError, setCameraError] = useState<string | null>(null);
+
+  const photoOutput = usePhotoOutput({
+    quality: 0.5,
+    qualityPrioritization: 'balanced',
+  });
+
+  // Expose capturePhotoToFile via a stable ref so GestureProcessor
+  // can call it without causing CameraShell to re-render.
+  const capturePhotoRef = useRef<(() => Promise<{ filePath: string }>) | null>(null);
+  useEffect(() => {
+    capturePhotoRef.current = () =>
+      photoOutput.capturePhotoToFile(
+        { flashMode: 'off', enableShutterSound: false },
+        {},
+      );
+  }, [photoOutput]);
+
+  if (cameraError != null) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.statusText}>{cameraError}</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <Camera
+        style={StyleSheet.absoluteFill}
+        device="front"
+        isActive={true}
+        outputs={[photoOutput]}
+        onError={(error) => {
+          console.error('[Gestura] Camera error:', error);
+          setCameraError(error.message || 'Camera failed to start');
+        }}
+      />
+      <GestureProcessor capturePhotoRef={capturePhotoRef} />
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Component — only handles permission, delegates to CameraShell
+// ---------------------------------------------------------------------------
+
+class ScreenErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  render() {
+    if (this.state.error != null) {
+      return (
+        <View style={styles.center}>
+          <Text style={styles.statusText}>
+            {this.state.error.message || 'Something went wrong'}
+          </Text>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function LiveTranslationScreen() {
+  const { hasPermission, requestPermission } = useCameraPermission();
+
+  useEffect(() => {
+    if (!hasPermission) requestPermission();
+  }, [hasPermission, requestPermission]);
+
   if (!hasPermission) {
     return (
       <View style={styles.center}>
@@ -264,17 +316,10 @@ export default function LiveTranslationScreen() {
     );
   }
 
-  // ---- Main Render --------------------------------------------------------
   return (
-    <View style={styles.container}>
-      <CameraLayer cameraRef={cameraRef} outputs={outputs} />
-      <HUDOverlay
-        gesture={gesture}
-        confidence={confidence}
-        modelState={tfModel.state}
-        modelError={tfModel.state === 'error' ? tfModel.error?.message : undefined}
-      />
-    </View>
+    <ScreenErrorBoundary>
+      <CameraShell />
+    </ScreenErrorBoundary>
   );
 }
 

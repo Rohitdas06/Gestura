@@ -3,6 +3,7 @@ package expo.modules.mediapipehands
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
@@ -21,21 +22,25 @@ import java.io.File
  *
  * The MediaPipe `hand_landmarker.task` model file must be placed in
  * `android/app/src/main/assets/`.
+ *
+ * HandLandmarker is created lazily on first use. Creating it in OnCreate
+ * crashes the whole app if the JNI `.so` is missing (common on emulators)
+ * or if the React context is not ready yet.
  */
 class ExpoMediapipeHandsModule : Module() {
 
     private var handLandmarker: HandLandmarker? = null
-    private var timestampMs: Long = 0
+    private var initFailed = false
 
     override fun definition() = ModuleDefinition {
         Name("ExpoMediapipeHands")
 
-        OnCreate {
-            initLandmarker(appContext.reactContext!!)
-        }
-
         OnDestroy {
-            handLandmarker?.close()
+            try {
+                handLandmarker?.close()
+            } catch (_: Throwable) {
+                // ignore
+            }
             handLandmarker = null
         }
 
@@ -49,49 +54,59 @@ class ExpoMediapipeHandsModule : Module() {
             try {
                 val landmarks = detectFromFile(filePath)
                 promise.resolve(landmarks)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                Log.e(TAG, "detectLandmarksFromFile failed", e)
                 promise.resolve(emptyList<Double>())
             }
         }
     }
 
-    // ------------------------------------------------------------------
-    // Private helpers
-    // ------------------------------------------------------------------
+    @Synchronized
+    private fun ensureLandmarker(): HandLandmarker? {
+        if (initFailed) return null
+        handLandmarker?.let { return it }
 
-    private fun initLandmarker(context: Context) {
-        val baseOptions = BaseOptions.builder()
-            .setModelAssetPath("hand_landmarker.task")
-            .build()
+        val context: Context = appContext.reactContext
+            ?: appContext.currentActivity
+            ?: return null
 
-        val options = HandLandmarker.HandLandmarkerOptions.builder()
-            .setBaseOptions(baseOptions)
-            .setRunningMode(RunningMode.IMAGE)
-            .setNumHands(1)
-            .setMinHandDetectionConfidence(0.5f)
-            .setMinHandPresenceConfidence(0.5f)
-            .setMinTrackingConfidence(0.5f)
-            .build()
+        return try {
+            val baseOptions = BaseOptions.builder()
+                .setModelAssetPath("hand_landmarker.task")
+                .build()
 
-        handLandmarker = HandLandmarker.createFromOptions(context, options)
+            val options = HandLandmarker.HandLandmarkerOptions.builder()
+                .setBaseOptions(baseOptions)
+                .setRunningMode(RunningMode.IMAGE)
+                .setNumHands(1)
+                .setMinHandDetectionConfidence(0.5f)
+                .setMinHandPresenceConfidence(0.5f)
+                .setMinTrackingConfidence(0.5f)
+                .build()
+
+            val created = HandLandmarker.createFromOptions(context, options)
+            handLandmarker = created
+            created
+        } catch (e: Throwable) {
+            initFailed = true
+            Log.e(TAG, "Failed to initialize HandLandmarker", e)
+            null
+        }
     }
 
     private fun detectFromFile(filePath: String): List<Double> {
-        val landmarker = handLandmarker ?: return emptyList()
+        val landmarker = ensureLandmarker() ?: return emptyList()
 
-        // Decode the JPEG/PNG file into a Bitmap.
         val cleanPath = filePath.removePrefix("file://")
         val file = File(cleanPath)
         if (!file.exists()) return emptyList()
 
         val options = BitmapFactory.Options().apply {
-            // Down-sample large images to avoid OOM.
             inSampleSize = 2
         }
         val bitmap = BitmapFactory.decodeFile(file.absolutePath, options)
             ?: return emptyList()
 
-        // Ensure the bitmap is in ARGB_8888 for MediaPipe.
         val argbBitmap = if (bitmap.config != Bitmap.Config.ARGB_8888) {
             bitmap.copy(Bitmap.Config.ARGB_8888, false).also { bitmap.recycle() }
         } else {
@@ -99,10 +114,8 @@ class ExpoMediapipeHandsModule : Module() {
         }
 
         val mpImage = BitmapImageBuilder(argbBitmap).build()
-
         val result = landmarker.detect(mpImage)
 
-        // Clean up temp snapshot file to avoid filling storage.
         file.delete()
 
         if (result.landmarks().isEmpty()) {
@@ -110,7 +123,6 @@ class ExpoMediapipeHandsModule : Module() {
             return emptyList()
         }
 
-        // Flatten the first hand's 21 landmarks to 63 doubles.
         val hand = result.landmarks()[0]
         val flat = ArrayList<Double>(63)
         for (lm in hand) {
@@ -121,5 +133,9 @@ class ExpoMediapipeHandsModule : Module() {
 
         argbBitmap.recycle()
         return flat
+    }
+
+    companion object {
+        private const val TAG = "ExpoMediapipeHands"
     }
 }
