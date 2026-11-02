@@ -1,1 +1,10 @@
-["hello", "thank_you", "welcome"]
+[
+  "closedFist",
+  "fingerCircle",
+  "fingerSymbols",
+  "multiFingerBend",
+  "openPalm",
+  "semiOpenFist",
+  "semiOpenPalm",
+  "singleFingerBend"
+]

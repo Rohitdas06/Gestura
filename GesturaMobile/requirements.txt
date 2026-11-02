@@ -1,0 +1,10 @@
+# Core
+numpy
+pandas
+scikit-learn
+matplotlib
+tensorflow
+mediapipe
+opencv-python        # do NOT also install opencv-contrib-python (they conflict)
+# Optional: speech on Windows/Linux (macOS uses the built-in `say`)
+pyttsx3; sys_platform != "darwin"
