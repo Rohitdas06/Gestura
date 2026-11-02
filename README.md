@@ -1,31 +1,28 @@
-# 🤟 Gestura: Two-Way Real-Time Sign Language Interpreter
+# 🤟 Gestura — Real-Time Sign Language Interpreter
 
-> An accessible, cross-platform mobile application enabling seamless bidirectional communication between the Deaf/Hard-of-Hearing (DHH) community and hearing non-signers.
+Webcam → MediaPipe hand tracking → on-device TensorFlow Lite sequence model → text + speech.
 
----
+**Supported signs:** hello · thank you · welcome (+ a `none` class so random movement is ignored)
 
-## 📌 Overview
+## How it works
+1. **MediaPipe** extracts 21 3D landmarks per hand (video mode, mirrored view).
+2. **features.py** converts each frame to a 132-value vector: hand shape (position/scale-invariant), wrist position and hand size for up to two hands. A sign is a 1.5 s clip resampled to 30 frames, plus frame-to-frame velocity.
+3. **1D-CNN** (TFLite built-ins only, <1 MB) classifies the clip.
+4. **Smoothing**: rolling window, EMA over probabilities, confidence threshold, N consistent frames, cooldown → speech via TTS.
 
-**BridgeSign** bridges communication barriers by turning a standard smartphone into an accessible, real-time two-way interpreter. It operates via two distinct processing pipelines:
+## Run
+```bash
+pip install -r requirements.txt
+python tracker.py --person alice        # record clips (SPACE / a / n / u / q)
+python train_model.py                   # trains, evaluates on unseen sessions, exports .tflite
+python test_model.py                    # live demo (m = manual mode, SPACE = capture)
+```
+`hand_landmarker.task` (MediaPipe model) must sit next to the scripts.
 
-1. **Sign-to-Speech (S2S):** Uses device cameras and **Google MediaPipe** to extract 3D hand/pose keypoints, classifies gestures using an on-device **TensorFlow Lite** sequence model, and outputs spoken audio via native TTS.
-2. **Speech-to-Sign (S2S):** Captures spoken voice, converts it into text, reorders English grammar into Sign Language Gloss via NLP, and animates a rigged **3D humanoid avatar** using **Three.js / React Three Fiber**.
+## Evaluation
+`train_model.py` splits by recording session/person so test clips are never near-duplicates of training clips. It writes `reports/confusion_matrix.png`, `reports/training_curves.png` and `reports/metrics.json`.
 
----
-
-## ✨ Key Features
-
-- ⚡ **On-Device Inference:** Local ML execution ensures ultra-low latency (< 400 ms) and zero reliance on cloud servers.
-- 🔒 **Privacy-First:** Video and audio streams are processed in-memory directly on the device with no external transmission.
-- 🤖 **Dynamic 3D Avatar:** Smooth animation blending via Three.js `AnimationMixer` for natural sign transitions.
-- 📱 **Cross-Platform:** Built on React Native for seamless deployment across iOS and Android.
-
----
-
-## 🛠️ Tech Stack
-
-- **Framework:** React Native (New Architecture / JSI Bridge)
-- **Computer Vision:** Google MediaPipe (Hands & Pose Tracking)
-- **Machine Learning:** TensorFlow Lite (`react-native-fast-tflite`)
-- **3D Graphics:** Three.js, React Three Fiber, Expo-GL
-- **Audio & Speech:** `@react-native-voice/voice`, `react-native-tts`
+## Roadmap
+- Port the exported `.tflite` to React Native (`react-native-fast-tflite`)
+- Speech → Sign (gloss + 3D avatar)
+- More vocabulary and signers

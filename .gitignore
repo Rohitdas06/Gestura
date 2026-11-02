@@ -1,19 +1,61 @@
-# Python & Environment (CRITICAL)
+# ---------- Python ----------
 venv/
+.venv/
+env/
 __pycache__/
-.DS_Store
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
 
-# Security & Environment Variables
-.env
-.env.local
-
-# VS Code Settings
-.vscode/
-
-# Downloaded Machine Learning Assets
-hand_landmarker.task
-
-# React Native / Node (For Phase 4)
+# ---------- Node / Expo ----------
 node_modules/
-npm-debug.log
-yarn-error.log
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+*.tsbuildinfo
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# ---------- Android / Gradle build output ----------
+build/
+.gradle/
+.kotlin/
+*.apk
+*.aab
+*.keystore
+*.jks
+local.properties
+.cxx/
+
+# ---------- Generated native folders (Expo prebuild) ----------
+GesturaMobile/android/
+GesturaMobile/ios/
+
+# ---------- Secrets / certificates ----------
+.env
+.env*.local
+*.pem
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# ---------- OS / editor ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# Large or regenerable ML files (only ignore if you can recreate them)
+*.h5
+*.pkl
+*.joblib
+*.npy
+*.csv        # careful: only if your datasets aren't meant to be shared
+dataset/
